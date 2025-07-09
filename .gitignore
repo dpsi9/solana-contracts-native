@@ -1,0 +1,43 @@
+# Rust
+target/
+Cargo.lock
+*.so
+*.dylib
+*.dll
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Solana
+keypairs/
+test-ledger/
+.anchor/
+.solana/
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+
+# Test artifacts
+/test-ledger/
+/tests/artifacts/
+
+# Logs
+*.log
+
+#
+governance/
+marketplace/
+staking/
+vault/
