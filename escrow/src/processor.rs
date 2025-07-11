@@ -145,7 +145,115 @@ pub fn make(
         ],
     )?;
 
-    msg!("Escrow created: Offering {} tokens for {}",amount, receive_amount);
+    msg!(
+        "Escrow created: Offering {} tokens for {}",
+        amount,
+        receive_amount
+    );
 
+    Ok(())
+}
+
+pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> ProgramResult {
+    let acc = &mut accounts.iter();
+
+    let taker = next_account_info(acc)?;
+    let maker = next_account_info(acc)?;
+    let escrow_account = next_account_info(acc)?;
+    let escrow_token_a = next_account_info(acc)?;
+    let taker_token_a = next_account_info(acc)?;
+    let taker_token_b = next_account_info(acc)?;
+    let maker_token_b = next_account_info(acc)?;
+    let mint_a = next_account_info(acc)?;
+    let mint_b = next_account_info(acc)?;
+    let token_program = next_account_info(acc)?;
+    let system_program = next_account_info(acc)?;
+
+    let escrow_data = &mut &**escrow_account.data.borrow();
+    let escrow: EscrowAccount = EscrowAccount::deserialize(escrow_data)?;
+
+    if amount != escrow.amount {
+        msg!("Invalid amount");
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    // transfer mint_b token from taker to maker
+    //first calculate decimals
+    let mint_b_data = &mint_b.try_borrow_data()?;
+    let mint = Mint::unpack(mint_b_data)?;
+    let decimal_b = mint.decimals;
+    // instruction
+    let ix_b = transfer_checked(
+        token_program.key,
+        taker_token_b.key,
+        mint_b.key,
+        maker_token_b.key,
+        taker.key,
+        &[],
+        escrow.receive_amount,
+        decimal_b,
+    )?;
+
+    invoke(
+        &ix_b,
+        &[
+            taker.clone(),
+            taker_token_b.clone(),
+            maker_token_b.clone(),
+            mint_b.clone(),
+            token_program.clone(),
+        ],
+    )?;
+
+    // transfer mint_a tokens from escrow token account to taker_a account
+    let (expected_pda, bump) = Pubkey::find_program_address(
+        &[
+            b"escrow",
+            escrow.maker.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+        ],
+        program_id,
+    );
+
+    if expected_pda != *escrow_account.key {
+        msg!("Invalid Escrow PDA");
+        return Err(ProgramError::InvalidSeeds);
+    }
+    // calculate decimals
+    let mint_a_data = &mint_a.try_borrow_data()?; // read raw bytes of mint account
+    let mint = Mint::unpack(mint_a_data)?; // deserialize bytes into Mint struct
+    let decimal_a = mint.decimals;
+
+    let ix_a = transfer_checked(
+        token_program.key,
+        escrow_token_a.key,
+        mint_a.key,
+        taker_token_a.key,
+        escrow_account.key,
+        &[],
+        amount,
+        decimal_a,
+    )?;
+
+    invoke_signed(
+        &ix_a,
+        &[
+            escrow_account.clone(),
+            escrow_token_a.clone(),
+            taker_token_a.clone(),
+            mint_a.clone(),
+            token_program.clone(),
+        ],
+        &[&[
+            b"escrow",
+            escrow.maker.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+            &[escrow.bump],
+        ]],
+    )?;
+
+    msg!("Escrow taken successfully: exchanged {} tokens", amount);
     Ok(())
 }
