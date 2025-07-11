@@ -257,3 +257,71 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
     msg!("Escrow taken successfully: exchanged {} tokens", amount);
     Ok(())
 }
+
+pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let acc = &mut accounts.iter();
+
+    let maker = next_account_info(acc)?;
+    let escrow_account = next_account_info(acc)?;
+    let mint_a = next_account_info(acc)?;
+    let mint_b = next_account_info(acc)?;
+    let escrow_token_a = next_account_info(acc)?;
+    let maker_token_a = next_account_info(acc)?;
+    let token_program = next_account_info(acc)?;
+    let system_program = next_account_info(acc)?;
+
+    // Deserialize escrow
+    let escrow_data = &mut &**escrow_account.data.borrow();
+    let escrow: EscrowAccount = EscrowAccount::deserialize(escrow_data)?;
+
+    // check if refunder is maker
+    if *maker.key != escrow.maker {
+        msg!("Unauthorized refund attempt");
+        return Err(ProgramError::InvalidAccountOwner);
+    }
+
+    let mint_data = &mint_a.try_borrow_data()?;
+    let mint = Mint::unpack(mint_data)?;
+    let decimals = mint.decimals;
+
+    let ix = transfer_checked(
+        token_program.key,
+        escrow_token_a.key,
+        mint_a.key,
+        maker_token_a.key,
+        escrow_account.key,
+        &[],
+        escrow.amount,
+        decimals,
+    )?;
+
+    invoke_signed(
+        &ix,
+        &[
+            escrow_account.clone(),
+            escrow_token_a.clone(),
+            maker_token_a.clone(),
+            mint_a.clone(),
+            token_program.clone(),
+        ],
+        &[&[
+            b"escrow",
+            escrow.maker.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+            &[escrow.bump],
+        ]],
+    )?;
+
+    msg!(
+        "Escrow Refunded: {} tokens returned to maker",
+        escrow.amount
+    );
+
+    // close the account
+    **maker.lamports.borrow_mut() += escrow_account.lamports();
+    **escrow_account.lamports.borrow_mut() = 0;
+    escrow_account.data.borrow_mut().fill(0);
+
+    Ok(())
+}
