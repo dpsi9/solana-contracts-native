@@ -1,21 +1,151 @@
-// Processor logic for the escrow contract
+use crate::error::EscrowError;
+use crate::instruction::EscrowInstruction;
+use crate::state::EscrowAccount;
+
+use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::{
-    account_info::AccountInfo,
+    account_info::{next_account_info, AccountInfo},
     entrypoint::ProgramResult,
+    msg,
+    program::{invoke, invoke_signed},
+    program_error::ProgramError,
+    program_pack::Pack,
     pubkey::Pubkey,
+    system_instruction,
+    sysvar::{rent::Rent, Sysvar},
 };
 
-use crate::instruction::EscrowInstruction;
+use spl_token_2022::{
+    instruction::initialize_account3, instruction::transfer_checked,
+    state::Account as TokenAccount, state::Mint, ID as TOKEN_2022_ID,
+};
 
-pub struct Processor;
+pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], input: &[u8]) -> ProgramResult {
+    let instruction = EscrowInstruction::try_from_slice(input)?;
 
-impl Processor {
-    pub fn process(
-        program_id: &Pubkey,
-        accounts: &[AccountInfo],
-        instruction_data: &[u8],
-    ) -> ProgramResult {
-        // Parse instruction and route to appropriate handler
-        todo!("Implement processor logic")
+    match instruction {
+        EscrowInstruction::Make {
+            amount,
+            receive_amount,
+        } => make(program_id, accounts, amount, receive_amount),
+        EscrowInstruction::Take { amount } => take(program_id, accounts, amount),
+        EscrowInstruction::Refund => refund(program_id, accounts),
     }
+}
+
+pub fn make(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    amount: u64,
+    receive_amount: u64,
+) -> ProgramResult {
+    let acc = &mut accounts.iter();
+
+    let maker = next_account_info(acc)?;
+    let mint_a = next_account_info(acc)?;
+    let mint_b = next_account_info(acc)?;
+    let maker_token_a = next_account_info(acc)?;
+    let escrow_token_a = next_account_info(acc)?;
+    let escrow_account = next_account_info(acc)?;
+    let token_program = next_account_info(acc)?;
+    let system_program = next_account_info(acc)?;
+    let rent_sysvar = next_account_info(acc)?;
+
+    // Derive and validate escrow account pda
+    let (expected_pda, bump) = Pubkey::find_program_address(
+        &[
+            b"escrow",
+            maker.key.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+        ],
+        program_id,
+    );
+
+    if expected_pda != *escrow_account.key {
+        msg!("Invalid escrow PDA");
+        return Err(ProgramError::InvalidSeeds);
+    }
+
+    // create escrow token account manually
+    let rent = &Rent::from_account_info(rent_sysvar)?;
+    let lamports = rent.minimum_balance(TokenAccount::LEN);
+
+    invoke_signed(
+        &system_instruction::create_account(
+            maker.key,
+            escrow_token_a.key,
+            lamports,
+            TokenAccount::LEN as u64,
+            token_program.key,
+        ),
+        &[
+            maker.clone(),
+            escrow_token_a.clone(),
+            system_program.clone(),
+        ],
+        &[&[
+            b"escrow",
+            maker.key.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+            &[bump],
+        ]],
+    )?;
+
+    invoke(
+        &initialize_account3(
+            token_program.key,
+            escrow_token_a.key,
+            mint_a.key,
+            escrow_account.key,
+        )?,
+        &[
+            escrow_token_a.clone(),
+            mint_a.clone(),
+            escrow_account.clone(),
+            token_program.clone(),
+        ],
+    )?;
+
+    let escrow = EscrowAccount {
+        maker: *maker.key,
+        mint_a: *mint_a.key,
+        mint_b: *mint_b.key,
+        amount,
+        receive_amount,
+        bump,
+    };
+
+    escrow.serialize(&mut &mut escrow_account.data.borrow_mut()[..])?;
+
+    let mint_data = &mint_a.try_borrow_data()?;
+    let mint = Mint::unpack(mint_data)?;
+    let decimals = mint.decimals;
+
+    let ix = transfer_checked(
+        token_program.key,
+        maker_token_a.key,
+        mint_a.key,
+        escrow_token_a.key,
+        maker.key,
+        &[],
+        amount,
+        decimals,
+    )?;
+
+    invoke(
+        &ix,
+        &[
+            maker.clone(),
+            maker_token_a.clone(),
+            mint_a.clone(),
+            escrow_token_a.clone(),
+            token_program.clone(),
+        ],
+    )?;
+
+    msg!("Escrow created: Offering {} tokens for {}",amount, receive_amount);
+
+    Ok(())
 }

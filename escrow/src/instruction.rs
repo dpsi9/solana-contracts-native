@@ -1,11 +1,8 @@
-// Instruction definitions for the escrow contract
 use borsh::{BorshDeserialize, BorshSerialize};
 
-#[derive(BorshSerialize, BorshDeserialize, Debug)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum EscrowInstruction {
-    // Define your instructions here
-    // Example:
-    Initialize { amount: u64 },
-    Exchange,
-    Cancel,
+    Make { amount: u64, receive_amount: u64 },
+    Take { amount: u64 },
+    Refund,
 }
