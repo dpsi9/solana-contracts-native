@@ -1,4 +1,3 @@
-use crate::error::EscrowError;
 use crate::instruction::EscrowInstruction;
 use crate::state::EscrowAccount;
 
@@ -17,7 +16,7 @@ use solana_program::{
 
 use spl_token_2022::{
     instruction::initialize_account3, instruction::transfer_checked,
-    state::Account as TokenAccount, state::Mint, ID as TOKEN_2022_ID,
+    state::Account as TokenAccount, state::Mint,
 };
 
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], input: &[u8]) -> ProgramResult {
@@ -158,7 +157,7 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
     let acc = &mut accounts.iter();
 
     let taker = next_account_info(acc)?;
-    let maker = next_account_info(acc)?;
+    let _maker = next_account_info(acc)?;
     let escrow_account = next_account_info(acc)?;
     let escrow_token_a = next_account_info(acc)?;
     let taker_token_a = next_account_info(acc)?;
@@ -167,7 +166,7 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
     let mint_a = next_account_info(acc)?;
     let mint_b = next_account_info(acc)?;
     let token_program = next_account_info(acc)?;
-    let system_program = next_account_info(acc)?;
+    let _system_program = next_account_info(acc)?;
 
     let escrow_data = &mut &**escrow_account.data.borrow();
     let escrow: EscrowAccount = EscrowAccount::deserialize(escrow_data)?;
@@ -206,7 +205,7 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
     )?;
 
     // transfer mint_a tokens from escrow token account to taker_a account
-    let (expected_pda, bump) = Pubkey::find_program_address(
+    let (expected_pda, _bump) = Pubkey::find_program_address(
         &[
             b"escrow",
             escrow.maker.as_ref(),
@@ -258,7 +257,7 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
     Ok(())
 }
 
-pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+pub fn refund(_program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let acc = &mut accounts.iter();
 
     let maker = next_account_info(acc)?;
@@ -268,7 +267,7 @@ pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let escrow_token_a = next_account_info(acc)?;
     let maker_token_a = next_account_info(acc)?;
     let token_program = next_account_info(acc)?;
-    let system_program = next_account_info(acc)?;
+    let _system_program = next_account_info(acc)?;
 
     // Deserialize escrow
     let escrow_data = &mut &**escrow_account.data.borrow();
