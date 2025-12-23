@@ -1,20 +1,14 @@
 [workspace]
 resolver = "2"
-members = [
-    "escrow",
-    "staking", 
-    "vault",
-    "marketplace",
-    "governance"
-]
+# members = ["escrow", "staking", "vault", "marketplace", "governance"]
+members = ["escrow"]
 
 [workspace.dependencies]
-solana-program = "~1.18.0"
-borsh = "1.0.0"
-thiserror = "1.0.0"
-spl-token = "4.0.0"
-spl-associated-token-account = "2.3.0"
-arrayref = "0.3.7"
+solana-program = "1.18.26"
+borsh = "1.6.0"
+thiserror = "2.0.17"
+spl-token = { version = "4.0.0", features = ["no-entrypoint"] }
+
 
 [profile.release]
 overflow-checks = true

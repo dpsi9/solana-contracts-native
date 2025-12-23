@@ -1,17 +1,19 @@
-pub mod error;
-pub mod instruction;
-pub mod processor;
-pub mod state;
+mod error;
+mod instructions;
+mod processor;
+mod state;
 
 use solana_program::{
-    account_info::AccountInfo, entrypoint, entrypoint::ProgramResult, pubkey::Pubkey,
+    account_info::AccountInfo, entrypoint, entrypoint::ProgramResult, 
+    pubkey::Pubkey,
 };
 
 entrypoint!(process_instruction);
-fn process_instruction(
+
+pub fn process_instruction(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
-    input: &[u8],
+    instruction_data: &[u8],
 ) -> ProgramResult {
-    processor::process(program_id, accounts, input)
+    processor::process(program_id, accounts, instruction_data)
 }
