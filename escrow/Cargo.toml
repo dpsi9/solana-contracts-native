@@ -14,6 +14,8 @@ thiserror = {workspace = true}
 
 [features]
 no-entrypoint = []
+custom-heap = []
+custom-panic = []
 # [package]
 # name = "escrow"
 # version = "0.1.0"

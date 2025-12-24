@@ -1,8 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
-    entrypoint::{self, ProgramResult},
-    instruction::Instruction,
+    entrypoint::ProgramResult,
     program::{invoke, invoke_signed},
     program_error::ProgramError,
     pubkey::Pubkey,
@@ -268,7 +267,7 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
         return Err(ProgramError::InvalidArgument);
     }
 
-    let (vault_pda, vault_bump) =
+    let (vault_pda, _vault_bump) =
         Pubkey::find_program_address(&[b"vault", escrow_state.key.as_ref()], program_id);
 
     if vault_pda != *escrow_vault.key {
@@ -444,7 +443,7 @@ pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
         return Err(ProgramError::InvalidSeeds);
     }
 
-    let (vault_pda, vault_bump) =
+    let (vault_pda, _vault_bump) =
         Pubkey::find_program_address(&[b"vault", escrow_state.key.as_ref()], program_id);
     if vault_pda != *escrow_vault.key {
         return Err(ProgramError::InvalidSeeds);
@@ -452,7 +451,7 @@ pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
 
     let vault_account = TokenAccount::unpack(&escrow_vault.data.borrow())?;
     if vault_account.owner != escrow_pda {
-        return Err(ProgramError::IllegalOwner);
+        return Err(EscrowError::InvalidUser.into());
     }
     if vault_account.mint != *mint_a.key {
         return Err(ProgramError::InvalidAccountOwner);
