@@ -4,10 +4,9 @@ resolver = "2"
 members = ["escrow"]
 
 [workspace.dependencies]
-solana-program = "1.18.26"
-borsh = "1.6.0"
+borsh = { version = "1.6.0", features = ["derive"] }
 thiserror = "2.0.17"
-spl-token = { version = "4.0.0", features = ["no-entrypoint"] }
+spl-token-interface = "2"
 
 
 [profile.release]

@@ -3,10 +3,9 @@ mod instructions;
 mod processor;
 mod state;
 
-use solana_program::{
-    account_info::AccountInfo, entrypoint, entrypoint::ProgramResult, 
-    pubkey::Pubkey,
-};
+use solana_account_info::AccountInfo;
+use solana_program_entrypoint::{entrypoint, ProgramResult};
+use solana_pubkey::Pubkey;
 
 entrypoint!(process_instruction);
 

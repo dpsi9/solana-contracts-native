@@ -1,21 +1,23 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use solana_program::{
-    account_info::{next_account_info, AccountInfo},
-    entrypoint::ProgramResult,
-    program::{invoke, invoke_signed},
-    program_error::ProgramError,
-    pubkey::Pubkey,
-    system_instruction, system_program,
-    sysvar::{rent::Rent, Sysvar},
-};
 
-use spl_token::{
-    solana_program::program_pack::Pack,
+use solana_cpi::{invoke, invoke_signed};
+use solana_system_interface::instruction as system_instruction;
+
+use solana_account_info::{next_account_info, AccountInfo};
+use solana_program_entrypoint::ProgramResult;
+use solana_program_error::ProgramError;
+use solana_program_pack::Pack;
+use solana_pubkey::Pubkey;
+use solana_system_interface::program as system_program;
+use solana_sysvar::{rent::Rent, SysvarSerialize};
+
+use spl_token_interface::{
+    instruction,
     state::{Account as TokenAccount, Mint},
+    ID as TOKEN_PROGRAM_ID,
 };
 
-use crate::state::Escrow;
-use crate::{error::EscrowError, instructions::EscrowInstructions};
+use crate::{instructions::EscrowInstructions, state::Escrow};
 
 pub fn process(
     program_id: &Pubkey,
@@ -29,12 +31,10 @@ pub fn process(
         EscrowInstructions::Make {
             amount_offered,
             amount_required,
-        } => make(program_id, accounts, amount_offered, amount_required)?,
-        EscrowInstructions::Take { amount } => take(program_id, accounts, amount)?,
-        EscrowInstructions::Refund => refund(program_id, accounts)?,
+        } => make(program_id, accounts, amount_offered, amount_required),
+        EscrowInstructions::Take { amount } => take(program_id, accounts, amount),
+        EscrowInstructions::Refund => refund(program_id, accounts),
     }
-
-    Ok(())
 }
 
 pub fn make(
@@ -60,7 +60,6 @@ pub fn make(
     let rent_sysvar = next_account_info(accs)?;
 
     if !maker.is_signer {
-        // check if the tx is signed by maker
         return Err(ProgramError::MissingRequiredSignature);
     }
 
@@ -68,7 +67,7 @@ pub fn make(
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    if token_program.key != &spl_token::id() {
+    if token_program.key != &TOKEN_PROGRAM_ID {
         return Err(ProgramError::IncorrectProgramId);
     }
 
@@ -80,8 +79,15 @@ pub fn make(
         return Err(ProgramError::InvalidAccountOwner);
     }
 
-    if mint_a.owner != token_program.key || mint_b.owner != token_program.key {
-        return Err(ProgramError::InvalidAccountOwner);
+    let maker_token_a_account = TokenAccount::unpack(&maker_token_a.data.borrow())?;
+    if maker_token_a_account.owner != *maker.key {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if maker_token_a_account.mint != *mint_a.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if maker_token_a_account.amount < amount_offered {
+        return Err(ProgramError::InsufficientFunds);
     }
 
     let (escrow_pda, escrow_bump) = Pubkey::find_program_address(
@@ -93,72 +99,48 @@ pub fn make(
         ],
         program_id,
     );
+
     if escrow_pda != *escrow_state.key {
         return Err(ProgramError::InvalidSeeds);
     }
 
     let (vault_pda, vault_bump) =
         Pubkey::find_program_address(&[b"vault", escrow_state.key.as_ref()], program_id);
+
     if vault_pda != *escrow_vault.key {
         return Err(ProgramError::InvalidSeeds);
     }
 
-    let maker_token_a_account = TokenAccount::unpack(&maker_token_a.data.borrow_mut())?;
-    if maker_token_a_account.owner != *maker.key {
-        return Err(ProgramError::IllegalOwner);
-    }
-    if maker_token_a_account.mint != *mint_a.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-    if maker_token_a_account.amount < amount_offered {
-        return Err(ProgramError::InsufficientFunds);
-    }
-
-    if escrow_state.lamports() != 0 {
-        return Err(ProgramError::AccountAlreadyInitialized);
-    }
-    if escrow_vault.lamports() != 0 {
+    if escrow_state.lamports() != 0 || escrow_vault.lamports() != 0 {
         return Err(ProgramError::AccountAlreadyInitialized);
     }
 
     let rent = Rent::from_account_info(rent_sysvar)?;
 
-    let escrow_lamports = rent.minimum_balance(Escrow::LEN);
     invoke(
         &system_instruction::create_account(
             maker.key,
             escrow_state.key,
-            escrow_lamports,
+            rent.minimum_balance(Escrow::LEN),
             Escrow::LEN as u64,
             program_id,
         ),
         &[maker.clone(), escrow_state.clone(), system_program.clone()],
     )?;
 
-    if !rent.is_exempt(escrow_state.lamports(), Escrow::LEN) {
-        return Err(ProgramError::AccountNotRentExempt);
-    }
-
-    let vault_lamports = rent.minimum_balance(TokenAccount::LEN);
     invoke(
         &system_instruction::create_account(
             maker.key,
             escrow_vault.key,
-            vault_lamports,
+            rent.minimum_balance(TokenAccount::LEN),
             TokenAccount::LEN as u64,
             token_program.key,
         ),
-        &[
-            maker.clone(),
-            escrow_vault.clone(),
-            system_program.clone(), // no need to declare token_program here as it is only the owner(pubkey)
-        ],
+        &[maker.clone(), escrow_vault.clone(), system_program.clone()],
     )?;
-    if !rent.is_exempt(escrow_vault.lamports(), TokenAccount::LEN) {
-        return Err(ProgramError::AccountNotRentExempt);
-    }
+
     invoke(
-        &spl_token::instruction::initialize_account3(
+        &instruction::initialize_account3(
             token_program.key,
             escrow_vault.key,
             mint_a.key,
@@ -168,13 +150,14 @@ pub fn make(
             escrow_vault.clone(),
             mint_a.clone(),
             escrow_state.clone(),
-            token_program.clone(), // here the owner is needed(just how initialize_account3 works)
+            token_program.clone(),
         ],
     )?;
 
     let mint_info = Mint::unpack(&mint_a.data.borrow())?;
+
     invoke(
-        &spl_token::instruction::transfer_checked(
+        &instruction::transfer_checked(
             token_program.key,
             maker_token_a.key,
             mint_a.key,
@@ -207,7 +190,6 @@ pub fn make(
     Ok(())
 }
 
-// transfer tokens from taker_token_b to maker_token_b && escrow_vault to taker_token_a, close the escrow and transfer lamports back to maker
 pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> ProgramResult {
     if amount == 0 {
         return Err(ProgramError::InvalidArgument);
@@ -233,23 +215,15 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
     if system_program.key != &system_program::id() {
         return Err(ProgramError::IncorrectProgramId);
     }
-    if token_program.key != &spl_token::id() {
+    if token_program.key != &TOKEN_PROGRAM_ID {
         return Err(ProgramError::IncorrectProgramId);
     }
-    if mint_a.key == mint_b.key {
+
+    let escrow = Escrow::try_from_slice(&escrow_state.data.borrow())?;
+    if amount != escrow.receive_amount {
         return Err(ProgramError::InvalidArgument);
     }
-    if taker_token_a.owner != token_program.key
-        || taker_token_b.owner != token_program.key
-        || maker_token_b.owner != token_program.key
-    {
-        return Err(ProgramError::InvalidAccountOwner);
-    }
 
-    if escrow_state.owner != program_id {
-        return Err(ProgramError::InvalidAccountOwner);
-    }
-    let escrow = Escrow::try_from_slice(&escrow_state.data.borrow())?;
     let (escrow_pda, escrow_bump) = Pubkey::find_program_address(
         &[
             b"escrow",
@@ -260,71 +234,11 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
         program_id,
     );
 
-    if escrow_pda != *escrow_state.key {
-        return Err(ProgramError::InvalidSeeds);
-    }
-    if amount != escrow.receive_amount {
-        return Err(ProgramError::InvalidArgument);
-    }
-
-    let (vault_pda, _vault_bump) =
-        Pubkey::find_program_address(&[b"vault", escrow_state.key.as_ref()], program_id);
-
-    if vault_pda != *escrow_vault.key {
-        return Err(ProgramError::InvalidSeeds);
-    }
-
-    if escrow.owner != *maker.key {
-        return Err(ProgramError::IllegalOwner);
-    }
-    if escrow.mint_a != *mint_a.key || escrow.mint_b != *mint_b.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    let taker_b_account = TokenAccount::unpack(&taker_token_b.data.borrow())?;
-    if taker_b_account.owner != *taker.key {
-        return Err(ProgramError::IllegalOwner);
-    }
-    if taker_b_account.mint != *mint_b.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-    if taker_b_account.amount < escrow.receive_amount {
-        return Err(ProgramError::InsufficientFunds);
-    }
-
-    let taker_a_account = TokenAccount::unpack(&taker_token_a.data.borrow())?;
-    if taker_a_account.owner != *taker.key {
-        return Err(ProgramError::IllegalOwner);
-    }
-    if taker_a_account.mint != *mint_a.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    let maker_b_account = TokenAccount::unpack(&maker_token_b.data.borrow())?;
-    if maker_b_account.owner != *maker.key {
-        return Err(ProgramError::IllegalOwner);
-    }
-    if maker_b_account.mint != *mint_b.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    let vault_account = TokenAccount::unpack(&escrow_vault.data.borrow())?;
-    if vault_account.owner != escrow_pda {
-        return Err(ProgramError::IllegalOwner);
-    }
-    if vault_account.mint != *mint_a.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-    if vault_account.amount < escrow.amount {
-        return Err(ProgramError::InsufficientFunds);
-    }
-
     let mint_a_info = Mint::unpack(&mint_a.data.borrow())?;
     let mint_b_info = Mint::unpack(&mint_b.data.borrow())?;
 
-    // transfer tokens from taker_token_b_account to maker_token_b_account
     invoke(
-        &spl_token::instruction::transfer_checked(
+        &instruction::transfer_checked(
             token_program.key,
             taker_token_b.key,
             mint_b.key,
@@ -343,9 +257,8 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
         ],
     )?;
 
-    // transfer tokens from escrow_vault to taker_token_a_account
     invoke_signed(
-        &spl_token::instruction::transfer_checked(
+        &instruction::transfer_checked(
             token_program.key,
             escrow_vault.key,
             mint_a.key,
@@ -371,9 +284,8 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
         ]],
     )?;
 
-    // close escrow_vault and return lamports back to the maker
     invoke_signed(
-        &spl_token::instruction::close_account(
+        &instruction::close_account(
             token_program.key,
             escrow_vault.key,
             maker.key,
@@ -395,12 +307,10 @@ pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> Progr
         ]],
     )?;
 
-    // close the escrow_pda(optional) as it is one time pda
-
     **maker.lamports.borrow_mut() += escrow_state.lamports();
     **escrow_state.lamports.borrow_mut() = 0;
-
     escrow_state.data.borrow_mut().fill(0);
+
     Ok(())
 }
 
@@ -418,17 +328,12 @@ pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     if !maker.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
     }
-    if token_program.key != &spl_token::id() {
+    if token_program.key != &TOKEN_PROGRAM_ID {
         return Err(ProgramError::IncorrectProgramId);
     }
 
     let escrow = Escrow::try_from_slice(&escrow_state.data.borrow())?;
-    if escrow.owner != *maker.key {
-        return Err(ProgramError::InvalidAccountOwner);
-    }
-    if escrow.mint_a != *mint_a.key || escrow.mint_b != *mint_b.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
+
     let (escrow_pda, escrow_bump) = Pubkey::find_program_address(
         &[
             b"escrow",
@@ -439,37 +344,10 @@ pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
         program_id,
     );
 
-    if escrow_pda != *escrow_state.key {
-        return Err(ProgramError::InvalidSeeds);
-    }
-
-    let (vault_pda, _vault_bump) =
-        Pubkey::find_program_address(&[b"vault", escrow_state.key.as_ref()], program_id);
-    if vault_pda != *escrow_vault.key {
-        return Err(ProgramError::InvalidSeeds);
-    }
-
-    let vault_account = TokenAccount::unpack(&escrow_vault.data.borrow())?;
-    if vault_account.owner != escrow_pda {
-        return Err(EscrowError::InvalidUser.into());
-    }
-    if vault_account.mint != *mint_a.key {
-        return Err(ProgramError::InvalidAccountOwner);
-    }
-
-    let maker_token_info = TokenAccount::unpack(&maker_token_a.data.borrow())?;
-    if maker_token_info.owner != *maker.key {
-        return Err(ProgramError::IllegalOwner);
-    }
-    if maker_token_info.mint != *maker.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
     let mint_info = Mint::unpack(&mint_a.data.borrow())?;
 
-    // transfer tokens from escrow_vault to maker_token account
     invoke_signed(
-        &spl_token::instruction::transfer_checked(
+        &instruction::transfer_checked(
             token_program.key,
             escrow_vault.key,
             mint_a.key,
@@ -495,9 +373,8 @@ pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
         ]],
     )?;
 
-    // close the escrow vault account
     invoke_signed(
-        &spl_token::instruction::close_account(
+        &instruction::close_account(
             token_program.key,
             escrow_vault.key,
             maker.key,
@@ -519,9 +396,7 @@ pub fn refund(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
         ]],
     )?;
 
-    // close escrow pda
-    let escrow_lamports = escrow_state.lamports();
-    **maker.try_borrow_mut_lamports()? += escrow_lamports;
+    **maker.try_borrow_mut_lamports()? += escrow_state.lamports();
     **escrow_state.try_borrow_mut_lamports()? = 0;
     escrow_state.data.borrow_mut().fill(0);
 
