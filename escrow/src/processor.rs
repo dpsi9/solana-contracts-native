@@ -208,7 +208,200 @@ pub fn make(
     Ok(())
 }
 
+// transfer tokens from taker_token_b to maker_token_b && escrow_vault to taker_token_a, close the escrow and transfer lamports back to maker
 pub fn take(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> ProgramResult {
+    if amount == 0 {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let accs = &mut accounts.iter();
+
+    let taker = next_account_info(accs)?;
+    let maker = next_account_info(accs)?;
+    let mint_a = next_account_info(accs)?;
+    let mint_b = next_account_info(accs)?;
+    let taker_token_a = next_account_info(accs)?;
+    let taker_token_b = next_account_info(accs)?;
+    let maker_token_b = next_account_info(accs)?;
+    let escrow_state = next_account_info(accs)?;
+    let escrow_vault = next_account_info(accs)?;
+    let system_program = next_account_info(accs)?;
+    let token_program = next_account_info(accs)?;
+
+    if !taker.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    if system_program.key != &system_program::id() {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    if token_program.key != &spl_token::id() {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    if mint_a.key == mint_b.key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if taker_token_a.owner != token_program.key
+        || taker_token_b.owner != token_program.key
+        || maker_token_b.owner != token_program.key
+    {
+        return Err(ProgramError::InvalidAccountOwner);
+    }
+
+    if escrow_state.owner != program_id {
+        return Err(ProgramError::InvalidAccountOwner);
+    }
+    let escrow = Escrow::try_from_slice(&escrow_state.data.borrow())?;
+    let (escrow_pda, escrow_bump) = Pubkey::find_program_address(
+        &[
+            b"escrow",
+            maker.key.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+        ],
+        program_id,
+    );
+
+    if escrow_pda != *escrow_state.key {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    if amount != escrow.receive_amount {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let (vault_pda, vault_bump) =
+        Pubkey::find_program_address(&[b"vault", escrow_state.key.as_ref()], program_id);
+
+    if vault_pda != *escrow_vault.key {
+        return Err(ProgramError::InvalidSeeds);
+    }
+
+    if escrow.owner != *maker.key {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if escrow.mint_a != *mint_a.key || escrow.mint_b != *mint_b.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let taker_b_account = TokenAccount::unpack(&taker_token_b.data.borrow())?;
+    if taker_b_account.owner != *taker.key {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if taker_b_account.mint != *mint_b.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if taker_b_account.amount < escrow.receive_amount {
+        return Err(ProgramError::InsufficientFunds);
+    }
+
+    let taker_a_account = TokenAccount::unpack(&taker_token_a.data.borrow())?;
+    if taker_a_account.owner != *taker.key {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if taker_a_account.mint != *mint_a.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let maker_b_account = TokenAccount::unpack(&maker_token_b.data.borrow())?;
+    if maker_b_account.owner != *maker.key {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if maker_b_account.mint != *mint_b.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let vault_account = TokenAccount::unpack(&escrow_vault.data.borrow())?;
+    if vault_account.owner != escrow_pda {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if vault_account.mint != *mint_a.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if vault_account.amount < escrow.amount {
+        return Err(ProgramError::InsufficientFunds);
+    }
+
+    let mint_a_info = Mint::unpack(&mint_a.data.borrow())?;
+    let mint_b_info = Mint::unpack(&mint_b.data.borrow())?;
+
+    // transfer tokens from taker_token_b_account to maker_token_b_account
+    invoke(
+        &spl_token::instruction::transfer_checked(
+            token_program.key,
+            taker_token_b.key,
+            mint_b.key,
+            maker_token_b.key,
+            taker.key,
+            &[taker.key],
+            escrow.receive_amount,
+            mint_b_info.decimals,
+        )?,
+        &[
+            taker_token_b.clone(),
+            mint_b.clone(),
+            maker_token_b.clone(),
+            taker.clone(),
+            token_program.clone(),
+        ],
+    )?;
+
+    // transfer tokens from escrow_vault to taker_token_a_account
+    invoke_signed(
+        &spl_token::instruction::transfer_checked(
+            token_program.key,
+            escrow_vault.key,
+            mint_a.key,
+            taker_token_a.key,
+            &escrow_pda,
+            &[],
+            escrow.amount,
+            mint_a_info.decimals,
+        )?,
+        &[
+            escrow_vault.clone(),
+            mint_a.clone(),
+            taker_token_a.clone(),
+            escrow_state.clone(),
+            token_program.clone(),
+        ],
+        &[&[
+            b"escrow",
+            maker.key.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+            &[escrow_bump],
+        ]],
+    )?;
+
+    // close escrow_vault and return lamports back to the maker
+    invoke_signed(
+        &spl_token::instruction::close_account(
+            token_program.key,
+            escrow_vault.key,
+            maker.key,
+            &escrow_pda,
+            &[],
+        )?,
+        &[
+            escrow_vault.clone(),
+            maker.clone(),
+            escrow_state.clone(),
+            token_program.clone(),
+        ],
+        &[&[
+            b"escrow",
+            maker.key.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+            &[escrow_bump],
+        ]],
+    )?;
+
+    // close the escrow_pda(optional) as it is one time pda
+
+    **maker.lamports.borrow_mut() += escrow_state.lamports();
+    **escrow_state.lamports.borrow_mut() = 0;
+
+    escrow_state.data.borrow_mut().fill(0);
     Ok(())
 }
 
