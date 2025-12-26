@@ -52,7 +52,7 @@ fn setup_escrow() -> (
     let taker_token_b = create_token_account(&mut svm, &taker, &taker.pubkey(), &mint_b);
 
     mint_tokens(&mut svm, &maker, &mint_a, &maker, &maker_token_a, 100);
-    mint_tokens(&mut svm, &taker, &mint_b, &maker, &taker_token_b, 300);
+    mint_tokens(&mut svm, &taker, &mint_b, &maker, &taker_token_b, 50);
 
     let (escrow_pda, escrow_bump) =
         derive_escrow_pda(&PROGRAM_ID, &maker.pubkey(), &mint_a, &mint_b);
@@ -143,4 +143,103 @@ fn make() {
     assert_eq!(escrow.owner, maker.pubkey());
     assert_eq!(escrow.mint_a, mint_a);
     assert_eq!(escrow.mint_b, mint_b);
+}
+
+#[test]
+fn take() {
+    let (
+        mut svm,
+        maker,
+        taker,
+        mint_a,
+        mint_b,
+        maker_token_a,
+        maker_token_b,
+        taker_token_a,
+        taker_token_b,
+        (escrow_pda, _escrow_bump),
+        (vault_pda, _vault_bump),
+    ) = setup_escrow();
+
+    let amount_offered: u64 = 100;
+    let amount_required: u64 = 50;
+
+    // First execute make instruction to create the escrow
+    let mut make_data = vec![0u8]; // discriminator for make fn
+    make_data.extend_from_slice(&amount_offered.to_le_bytes());
+    make_data.extend_from_slice(&amount_required.to_le_bytes());
+
+    let make_ix = Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(maker.pubkey(), true),
+            AccountMeta::new_readonly(mint_a, false),
+            AccountMeta::new_readonly(mint_b, false),
+            AccountMeta::new(maker_token_a, false),
+            AccountMeta::new(escrow_pda, false),
+            AccountMeta::new(vault_pda, false),
+            AccountMeta::new_readonly(spl_token_interface::ID, false),
+            AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            AccountMeta::new_readonly(solana_sysvar::rent::ID, false),
+        ],
+        data: make_data,
+    };
+
+    let blockhash = svm.latest_blockhash();
+    let tx =
+        Transaction::new_signed_with_payer(&[make_ix], Some(&maker.pubkey()), &[&maker], blockhash);
+    svm.send_transaction(tx).expect("Make instruction failed");
+
+    // Now execute take instruction
+    let mut instruction_data = vec![1u8]; // discriminator for take fn
+    instruction_data.extend_from_slice(&amount_required.to_le_bytes());
+
+    let take_ix = Instruction {
+        program_id: PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(taker.pubkey(), true),
+            AccountMeta::new(maker.pubkey(), false),
+            AccountMeta::new(mint_a, false),
+            AccountMeta::new(mint_b, false),
+            AccountMeta::new(taker_token_a, false),
+            AccountMeta::new(taker_token_b, false),
+            AccountMeta::new(maker_token_b, false),
+            AccountMeta::new(escrow_pda, false),
+            AccountMeta::new(vault_pda, false),
+            AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            AccountMeta::new_readonly(spl_token_interface::ID, false),
+        ],
+        data: instruction_data,
+    };
+
+    let recent_blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(
+        &[take_ix],
+        Some(&taker.pubkey()),
+        &[&taker],
+        recent_blockhash,
+    );
+
+    let result = svm.send_transaction(tx);
+
+    match result {
+        Ok(_meta) => {
+            println!("take ix successful");
+        }
+        Err(e) => {
+            panic!("Take ix failed: {:#?}", e);
+        }
+    }
+
+    let taker_token_b_account = svm.get_account(&taker_token_b).unwrap();
+    let taker_token_b_data = TokenAccount::unpack(&taker_token_b_account.data).unwrap();
+    assert_eq!(taker_token_b_data.amount, 0);
+
+    let maker_token_b_account = svm.get_account(&maker_token_b).unwrap();
+    let maker_token_b_data = TokenAccount::unpack(&maker_token_b_account.data).unwrap();
+    assert_eq!(maker_token_b_data.amount, amount_required);
+
+    // Assert escrow account is closed (account no longer exists or has 0 lamports)
+    let escrow_balance = svm.get_balance(&escrow_pda).unwrap_or(0);
+    assert_eq!(escrow_balance, 0);
 }
