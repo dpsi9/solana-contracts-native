@@ -117,7 +117,7 @@ pub fn make(
 
     let rent = Rent::from_account_info(rent_sysvar)?;
 
-    invoke(
+    invoke_signed(
         &system_instruction::create_account(
             maker.key,
             escrow_state.key,
@@ -126,9 +126,16 @@ pub fn make(
             program_id,
         ),
         &[maker.clone(), escrow_state.clone(), system_program.clone()],
+        &[&[
+            b"escrow",
+            maker.key.as_ref(),
+            mint_a.key.as_ref(),
+            mint_b.key.as_ref(),
+            &[escrow_bump],
+        ]],
     )?;
 
-    invoke(
+    invoke_signed(
         &system_instruction::create_account(
             maker.key,
             escrow_vault.key,
@@ -137,6 +144,7 @@ pub fn make(
             token_program.key,
         ),
         &[maker.clone(), escrow_vault.clone(), system_program.clone()],
+        &[&[b"vault", escrow_state.key.as_ref(), &[vault_bump]]],
     )?;
 
     invoke(

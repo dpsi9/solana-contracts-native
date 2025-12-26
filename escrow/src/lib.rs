@@ -1,7 +1,7 @@
-mod error;
-mod instructions;
-mod processor;
-mod state;
+pub mod error;
+pub mod instructions;
+pub mod processor;
+pub mod state;
 
 use solana_account_info::AccountInfo;
 use solana_program_entrypoint::{entrypoint, ProgramResult};
